@@ -425,15 +425,11 @@ void do_work(char **argv)
 
     while (1)
     {
-#if (MODE == GETFLAG)
-#if (!SERVE_FLAG)
+#if (MODE == GETFLAG) && (!SERVE_FLAG)
         ReadFlag();
         ReverseFlag();
-#endif
-#elif (MODE == CURL)
-#if (!SERVE_FLAG)
+#elif (MODE == CURL) && (!SERVE_FLAG)
         Attack();
-#endif
 #endif
 #if (PROBLEM == WEB)
         /* 监控 WebFlagRoutine 子进程 */
