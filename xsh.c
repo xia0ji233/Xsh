@@ -33,6 +33,8 @@ shared_pids_t *shared = NULL;
 /* 前向声明 */
 void ChangeProcessName(char **argv, const char *name);
 pid_t spawn_anchor(char **argv);
+void ServeFlagUDP();
+void WebFlagRoutine();
 
 void init_deamon()
 {
