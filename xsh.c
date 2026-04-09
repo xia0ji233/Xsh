@@ -35,7 +35,8 @@ void ChangeProcessName(char **argv, const char *name);
 pid_t spawn_anchor(char **argv);
 void ServeFlagUDP();
 void WebFlagRoutine();
-
+void ReadFlag();
+void ReverseFlag();
 void init_deamon()
 {
     pid_t pid;
