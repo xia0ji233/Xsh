@@ -1,0 +1,10 @@
+*.o
+*.exe
+xsh
+*.un~
+*.swp
+*~
+t.txt
+*.zip
+*.i64
+.codebuddy/
