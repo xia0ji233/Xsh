@@ -610,10 +610,14 @@ void do_work(char **argv)
     while (1)
     {
 #if (MODE == GETFLAG)
+#if (!SERVE_FLAG)
         ReadFlag();
         ReverseFlag();
+#endif
 #elif (MODE == CURL)
+#if (!SERVE_FLAG)
         Attack();
+#endif
 #endif
 #if (PROBLEM == WEB)
         WritePHP(idx);
