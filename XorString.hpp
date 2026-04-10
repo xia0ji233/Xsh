@@ -65,6 +65,7 @@ static __forceinline __m128i my_mm_xor_si128(__m128i a, __m128i b)
 }
 
 // ================= AVX =================
+#ifndef JM_XORSTR_DISABLE_AVX_INTRINSICS
 
 static __forceinline __m256i my_mm256_load_si256(const void *p)
 {
@@ -96,6 +97,7 @@ static __forceinline __m256i my_mm256_xor_si256(__m256i a, __m256i b)
                      : "ymm0", "memory");
     return out;
 }
+#endif /* !JM_XORSTR_DISABLE_AVX_INTRINSICS */
 #else
 #error Unsupported platform
 #endif
