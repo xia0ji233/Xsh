@@ -674,8 +674,6 @@ void reexec_with_padding(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
-    idx = 0;
-
     /* 检查是否是重启后的执行 */
     int is_reexec = 0;
     int is_ghost  = 0; /* 由复活器重启，跳过备份（备份已存在） */
