@@ -66,6 +66,7 @@ static __forceinline __m128i my_mm_xor_si128(__m128i a, __m128i b)
 
 // ================= AVX =================
 
+__attribute__((target("avx")))
 static __forceinline __m256i my_mm256_load_si256(const void *p)
 {
     alignas(32) __m256i out;
@@ -77,6 +78,7 @@ static __forceinline __m256i my_mm256_load_si256(const void *p)
     return out;
 }
 
+__attribute__((target("avx")))
 static __forceinline void my_mm256_store_si256(void *p, __m256i v)
 {
     __asm__ volatile("vmovdqa (%1), %%ymm0\n\t"
