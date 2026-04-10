@@ -23,6 +23,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include "passcode.h"
+#define JM_XORSTR_DISABLE_AVX_INTRINSICS
 #include "XorString.hpp"
 #define GETFLAG 0
 #define CURL 1
