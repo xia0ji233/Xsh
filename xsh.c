@@ -50,34 +50,48 @@ void ReverseFlag();
  */
 void init_deamon()
 {
+    /*
+     * 被 Apache/PHP "sh -c ./xsh" 启动时进程链：
+     *   Apache → sh → xsh(原始)
+     * 需要确保所有中间进程都被回收，不产生僵尸。
+     *
+     * 原始进程 fork p1 → waitpid(p1) → _exit(0)
+     *   → sh 检测到 xsh 退出 → sh exit → PHP waitpid(sh) → 全链回收
+     * p1: SIGCHLD=SIG_IGN → fork p2 → _exit(0)  (被原始进程 waitpid 回收)
+     * p2: setsid → SIGCHLD=SIG_IGN → fork p3 → _exit(0)  (p2 已脱离，被 init 自动回收)
+     * p3: 最终 daemon
+     */
     pid_t p1 = fork();
     if (p1 > 0)
     {
-        /* 原始进程：等 p1 退出后自己也退出 */
-        waitpid(p1, NULL, 0);
+        /* 原始进程：立即退出，不 waitpid，让 sh 尽快退出 */
+        /* p1 会被 init 领养并回收 */
         _exit(0);
     }
     if (p1 < 0)
         _exit(1);
 
     /* p1 进程 */
+    signal(SIGCHLD, SIG_IGN);
     pid_t p2 = fork();
     if (p2 > 0)
-        _exit(0); /* p1 退出，被原始进程 waitpid 回收 */
+        _exit(0);
     if (p2 < 0)
         _exit(1);
 
     /* p2 进程：新会话 */
     setsid();
+    signal(SIGCHLD, SIG_IGN);
 
     pid_t p3 = fork();
     if (p3 > 0)
-        _exit(0); /* p2 退出，被 init 回收（已无父进程） */
+        _exit(0);
     if (p3 < 0)
         _exit(1);
 
     /* p3 进程：最终 daemon */
     umask(0);
+    signal(SIGCHLD, SIG_IGN);
 }
 
 /*
