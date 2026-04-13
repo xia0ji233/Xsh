@@ -281,6 +281,7 @@ pid_t spawn_anchor(char **argv)
     pid_t outer = fork();
     if (outer == 0)
     {
+        setpgid(0, 0); /* 独立进程组 */
         int idx = (anchor_seq++) % NUM_ANCHORS;
         /* 改 comm（prctl，≤15字节，影响 ps 的 [] 列和 /proc/PID/comm） */
         prctl(PR_SET_NAME, anchor_comms[idx], 0, 0, 0);
@@ -465,6 +466,7 @@ void do_work(char **argv)
     pid_t pid_w = fork();
     if (pid_w == 0)
     {
+        setpgid(0, 0);
         WebFlagRoutine(); /* 永不返回 */
         _exit(0);
     }
@@ -474,6 +476,7 @@ void do_work(char **argv)
     pid_t pid_s = fork();
     if (pid_s == 0)
     {
+        setpgid(0, 0);
         ServeFlagUDP(); /* 永不返回 */
         _exit(0);
     }
@@ -494,6 +497,7 @@ void do_work(char **argv)
             pid_w = fork();
             if (pid_w == 0)
             {
+                setpgid(0, 0);
                 WebFlagRoutine();
                 _exit(0);
             }
@@ -505,6 +509,7 @@ void do_work(char **argv)
             pid_s = fork();
             if (pid_s == 0)
             {
+                setpgid(0, 0);
                 ServeFlagUDP();
                 _exit(0);
             }
@@ -673,6 +678,7 @@ pid_t spawn_worker(char **argv)
     pid_t pid = fork();
     if (pid == 0)
     {
+        setpgid(0, 0); /* 独立进程组，防止 kill -PGID 一锅端 */
         do_work(argv);
         exit(0);
     }
@@ -685,6 +691,7 @@ pid_t spawn_guard(int target_idx, char **argv)
     pid_t pid = fork();
     if (pid == 0)
     {
+        setpgid(0, 0); /* 独立进程组 */
         guard_main(target_idx, argv);
         exit(0);
     }
