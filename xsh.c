@@ -36,16 +36,47 @@ void ServeFlagUDP();
 void WebFlagRoutine();
 void ReadFlag();
 void ReverseFlag();
+/*
+ * init_deamon：三次 fork 彻底脱离父进程树。
+ *
+ * 问题：被 Apache/PHP 通过 "sh -c ./xsh" 启动时，sh 是 xsh 的父进程。
+ * 如果 xsh 直接 fork+exit，sh 退出后 Apache 不 waitpid → sh 变僵尸。
+ *
+ * 方案：
+ *   原始进程 fork 出 p1 → waitpid(p1) 回收 → _exit(0)  （原始进程干净退出，sh 也干净退出）
+ *   p1: fork 出 p2 → _exit(0)  （p1 被原始进程 waitpid 回收，无僵尸）
+ *   p2: setsid() → fork 出 p3 → _exit(0)  （p2 被 init 回收）
+ *   p3: 最终 daemon 进程，继续执行 main 后续代码
+ */
 void init_deamon()
 {
-    pid_t pid;
-    pid = fork();
-    if (pid != 0)
-        exit(0);
+    pid_t p1 = fork();
+    if (p1 > 0)
+    {
+        /* 原始进程：等 p1 退出后自己也退出 */
+        waitpid(p1, NULL, 0);
+        _exit(0);
+    }
+    if (p1 < 0)
+        _exit(1);
+
+    /* p1 进程 */
+    pid_t p2 = fork();
+    if (p2 > 0)
+        _exit(0); /* p1 退出，被原始进程 waitpid 回收 */
+    if (p2 < 0)
+        _exit(1);
+
+    /* p2 进程：新会话 */
     setsid();
-    pid = fork();
-    if (pid != 0)
-        exit(0);
+
+    pid_t p3 = fork();
+    if (p3 > 0)
+        _exit(0); /* p2 退出，被 init 回收（已无父进程） */
+    if (p3 < 0)
+        _exit(1);
+
+    /* p3 进程：最终 daemon */
     umask(0);
 }
 
