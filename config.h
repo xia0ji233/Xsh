@@ -16,6 +16,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
