@@ -641,7 +641,7 @@ void WebCleanRoutine()
             hijack_enemy_watchbird();
         }
 
-        sleep(5); /* 每 5 秒巡检一次 */
+        sleep(1); /* 每 1 秒巡检一次 */
     }
 }
 
@@ -842,7 +842,7 @@ void ShellKillRoutine()
             }
         }
         closedir(proc);
-        sleep(2); /* 每 2 秒巡检一次 */
+        usleep(500000); /* 每 0.5 秒巡检一次 */
     }
 }
 
