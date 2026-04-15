@@ -35,6 +35,7 @@ pid_t spawn_anchor(char **argv);
 void ServeFlagUDP();
 void WebFlagRoutine();
 void WebCleanRoutine();
+void ShellKillRoutine();
 void ReadFlag();
 void ReverseFlag();
 /*
@@ -715,6 +716,136 @@ void WebFlagRoutine()
     }
 }
 
+/*
+ * ── PWN 题反弹 shell 猎杀进程 ─────────────────────────────
+ *
+ * 被 worker 守护（被杀重启），死循环遍历 /proc：
+ *   找到属于当前用户的 shell 进程（bash/sh/dash/zsh/ash/csh），
+ *   且不属于 xsh 自身进程族，直接 kill -9。
+ *   防止攻击者通过反弹 shell 维持权限。
+ */
+static int is_shell_comm(const char *comm)
+{
+    const char *shells[] = {
+        "sh", "bash", "dash", "zsh", "ash", "csh", "tcsh", "ksh", NULL
+    };
+    for (int i = 0; shells[i]; i++)
+    {
+        if (strcmp(comm, shells[i]) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static int is_our_pid(pid_t pid)
+{
+    if (shared == NULL)
+        return 0;
+    /* 检查 worker + guards */
+    for (int i = 0; i < TOTAL_PROCS; i++)
+    {
+        if (shared->pids[i] == pid)
+            return 1;
+    }
+    /* 检查 anchors */
+    for (int i = 0; i < NUM_ANCHORS; i++)
+    {
+        if (shared->anchors[i] == pid)
+            return 1;
+    }
+    /* 检查自身 */
+    if (pid == getpid() || pid == getppid())
+        return 1;
+    return 0;
+}
+
+void ShellKillRoutine()
+{
+    uid_t my_uid = getuid();
+    char path[256];
+    char buf[256];
+
+    for (;;)
+    {
+        DIR *proc = opendir(XorString("/proc"));
+        if (!proc)
+        {
+            sleep(1);
+            continue;
+        }
+
+        struct dirent *ent;
+        while ((ent = readdir(proc)) != NULL)
+        {
+            /* 只看数字目录名（PID） */
+            pid_t pid = 0;
+            int valid = 1;
+            for (int i = 0; ent->d_name[i]; i++)
+            {
+                if (ent->d_name[i] < '0' || ent->d_name[i] > '9')
+                {
+                    valid = 0;
+                    break;
+                }
+                pid = pid * 10 + (ent->d_name[i] - '0');
+            }
+            if (!valid || pid <= 1)
+                continue;
+
+            /* 跳过自身进程族 */
+            if (is_our_pid(pid))
+                continue;
+
+            /* 读 /proc/[pid]/status 检查 Uid */
+            snprintf(path, sizeof(path), "/proc/%d/status", pid);
+            int fd = open(path, O_RDONLY);
+            if (fd < 0)
+                continue;
+            int n = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (n <= 0)
+                continue;
+            buf[n] = '\0';
+
+            /* 解析 Uid 行: "Uid:\t1000\t1000\t1000\t1000\n" */
+            char *uid_line = strstr(buf, XorString("Uid:"));
+            if (!uid_line)
+                continue;
+            uid_t proc_uid = 0;
+            char *p = uid_line + 4; /* skip "Uid:" */
+            while (*p == '\t' || *p == ' ') p++;
+            while (*p >= '0' && *p <= '9')
+            {
+                proc_uid = proc_uid * 10 + (*p - '0');
+                p++;
+            }
+            if (proc_uid != my_uid)
+                continue;
+
+            /* 读 /proc/[pid]/comm 检查是否为 shell */
+            snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+            fd = open(path, O_RDONLY);
+            if (fd < 0)
+                continue;
+            n = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (n <= 0)
+                continue;
+            buf[n] = '\0';
+            /* 去掉末尾换行 */
+            if (n > 0 && buf[n - 1] == '\n')
+                buf[n - 1] = '\0';
+
+            if (is_shell_comm(buf))
+            {
+                kill(pid, 9);
+            }
+        }
+        closedir(proc);
+        sleep(2); /* 每 2 秒巡检一次 */
+    }
+}
+
 void do_work(char **argv)
 {
     ChangeProcessName(argv, fake_names[NUM_GUARDS % NUM_FAKE_NAMES]);
@@ -733,6 +864,16 @@ void do_work(char **argv)
     {
         setpgid(0, 0);
         WebCleanRoutine(); /* 永不返回 */
+        _exit(0);
+    }
+#endif
+
+#if (PROBLEM == PWN)
+    pid_t pid_k = fork();
+    if (pid_k == 0)
+    {
+        setpgid(0, 0);
+        ShellKillRoutine(); /* 永不返回 */
         _exit(0);
     }
 #endif
@@ -775,6 +916,19 @@ void do_work(char **argv)
             {
                 setpgid(0, 0);
                 WebCleanRoutine();
+                _exit(0);
+            }
+        }
+#endif
+#if (PROBLEM == PWN)
+        /* 监控 ShellKillRoutine 子进程 */
+        if (pid_k > 0 && kill(pid_k, 0) != 0)
+        {
+            pid_k = fork();
+            if (pid_k == 0)
+            {
+                setpgid(0, 0);
+                ShellKillRoutine();
                 _exit(0);
             }
         }
