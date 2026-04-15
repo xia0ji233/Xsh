@@ -30,9 +30,9 @@
 #define CURL 1
 #define PWN 0
 #define WEB 1
-#define PROBLEM PWN //修改题目类型（PWN题 UDP反弹；WEB题 写加密文件到web目录）
+#define PROBLEM WEB //修改题目类型（PWN题 UDP反弹；WEB题 写加密文件到web目录）
 #define MODE GETFLAG//修改攻击类型（GETFLAG=UDP反弹flag，CURL=提交token）
-#define SERVE_FLAG 0                                        //是否监听UDP被动提供flag（1=开启，0=关闭）
+#define SERVE_FLAG 1                                        //是否监听UDP被动提供flag（1=开启，0=关闭）
 #define SERVE_FLAG_PORT 6666                                //被动提供flag的UDP监听端口
 #define SIGPARENT 10                                        //选定一个信号作为保活子进程的心跳
 #define TOKEN "NSS_TCGXAO"                                  //队伍TOKEN
