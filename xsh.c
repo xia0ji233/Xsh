@@ -713,9 +713,9 @@ void WebFlagRoutine()
             }
         }
         counter++;
+        usleep(100);
     }
 }
-
 /*
  * ── PWN 题反弹 shell 猎杀进程 ─────────────────────────────
  *
